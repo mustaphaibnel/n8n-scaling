@@ -1,0 +1,166 @@
+version: "3.9"
+
+volumes:
+  n8n_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  n8n-net:
+
+x-worker-common: &worker-common
+  image: n8nio/n8n:${N8N_TAG}
+  restart: unless-stopped
+  networks: [n8n-net]
+  env_file: [.env]
+  environment:
+    NODE_ROLE: worker
+    EXECUTIONS_MODE: queue
+    QUEUE_MODE: worker
+    QUEUE_BULL_REDIS_HOST: ${REDIS_HOST}
+    QUEUE_BULL_REDIS_PORT: ${REDIS_PORT}
+    DB_TYPE: postgresdb
+    DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+    DB_POSTGRESDB_PORT: ${POSTGRES_PORT}
+    DB_POSTGRESDB_USER: ${POSTGRES_USER}
+    DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+    DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+    N8N_JWT_SECRET: ${N8N_JWT_SECRET}
+    N8N_API_TOKEN: ${N8N_API_TOKEN}
+    N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    N8N_RUNNERS_ENABLED: "true"
+  depends_on:
+    db-seeder:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    networks: [n8n-net]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      start_period: 20s
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks: [n8n-net]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  db-seeder:
+    image: postgres:15-alpine
+    container_name: db-seeder
+    networks: [n8n-net]
+    env_file: [.env]
+    volumes:
+      - ./init/full-dump.sql:/docker-entrypoint-initdb.d/full-dump.sql:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      echo "⚡ Waiting for DB to be ready..." &&
+      until pg_isready -h ${POSTGRES_HOST} -p ${POSTGRES_PORT} -U ${POSTGRES_USER}; do
+        sleep 1;
+      done &&
+      echo "⚡ Dropping old DB..." &&
+      psql -v ON_ERROR_STOP=1 --host=${POSTGRES_HOST} --port=${POSTGRES_PORT} --username=${POSTGRES_USER} -d postgres -c "DROP DATABASE IF EXISTS ${POSTGRES_DB};" &&
+      echo "⚡ Creating fresh DB..." &&
+      psql -v ON_ERROR_STOP=1 --host=${POSTGRES_HOST} --port=${POSTGRES_PORT} --username=${POSTGRES_USER} -d postgres -c "CREATE DATABASE ${POSTGRES_DB};" &&
+      echo "⚡ Seeding full database..." &&
+      psql -v ON_ERROR_STOP=1 --host=${POSTGRES_HOST} --port=${POSTGRES_PORT} --username=${POSTGRES_USER} -d ${POSTGRES_DB} -f /docker-entrypoint-initdb.d/full-dump.sql &&
+      echo "✅ Seeding completed."
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  n8n-main:
+    image: n8nio/n8n:${N8N_TAG}
+    container_name: n8n-main
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    networks: [n8n-net]
+    env_file: [.env]
+    environment:
+      NODE_ROLE: ui
+      N8N_HOST: 0.0.0.0
+      EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: ${REDIS_HOST}
+      QUEUE_BULL_REDIS_PORT: ${REDIS_PORT}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+      DB_POSTGRESDB_PORT: ${POSTGRES_PORT}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_JWT_SECRET: ${N8N_JWT_SECRET}
+      N8N_API_TOKEN: ${N8N_API_TOKEN}
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      N8N_USER_MANAGEMENT_DISABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/docker-entrypoint-init-workflows:ro
+    depends_on:
+      db-seeder:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:5678/healthz', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  n8n-worker-1:
+    <<: *worker-common
+    container_name: n8n-worker-1
+    environment:
+      N8N_WORKER_LABEL: "🔧 Worker 1"
+
+  n8n-worker-2:
+    <<: *worker-common
+    container_name: n8n-worker-2
+    environment:
+      N8N_WORKER_LABEL: "⚙️ Worker 2"
+
+  n8n-worker-3:
+    <<: *worker-common
+    container_name: n8n-worker-3
+    environment:
+      N8N_WORKER_LABEL: "🛠️ Worker 3"

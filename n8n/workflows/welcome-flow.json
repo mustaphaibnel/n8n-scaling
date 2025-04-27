@@ -1,0 +1,42 @@
+{
+  "name": "Welcome Flow",
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {
+        "path": "welcome",
+        "httpMethod": "GET",
+        "responseMode": "onReceived",
+        "responseCode": 200
+      }
+    },
+    {
+      "id": "reply",
+      "name": "Reply",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "parameters": {
+        "functionCode": "console.log(`🔧 Workflow executed by: ${process.env.N8N_WORKER_LABEL || process.env.HOSTNAME || 'unknown'}`);\nreturn [{\n  json: {\n    message: `👋 Hello ${$json[\"name\"] || \"World\"}!`,\n    worker: process.env.N8N_WORKER_LABEL || process.env.HOSTNAME || 'unknown',\n    role: process.env.NODE_ROLE || 'unknown'\n  }\n}];"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true
+}
